@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ABER · Second Brain</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f3f2ec; color: #202822; font: 1rem/1.5 system-ui, sans-serif; }
+  main { max-width: 72rem; margin: auto; padding: 32px 16px 64px; }
+  header { padding: 16px 0 24px; }
+  h1 { font: 500 clamp(2.75rem, 7vw, 5rem)/1 Georgia, serif; margin: 0 0 8px; }
+  h2 { font: 500 1.85rem/1.2 Georgia, serif; margin: 0 0 16px; }
+  p { margin: 0 0 16px; }
+  header p, small { color: #4e5d52; }
+  .panels { display: grid; gap: 16px; }
+  section { background: #fffefa; border: 1px solid #d5dcd4; border-radius: 12px; padding: 24px; }
+  .inbox { margin-top: 16px; }
+  form, label { display: grid; gap: 8px; }
+  form { gap: 16px; }
+  .fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+  input, select, button { min-height: 44px; border: 1px solid #929f94; border-radius: 8px; padding: 8px; font: inherit; color: inherit; background: white; min-width: 0; }
+  button { cursor: pointer; padding: 8px 16px; }
+  button:hover { background: #e9f0e9; }
+  button:disabled { cursor: default; opacity: .6; }
+  button[type="submit"] { background: #245239; color: white; border-color: #245239; }
+  button[type="submit"]:hover { background: #183b29; }
+  :focus-visible { outline: 3px solid #34724e; outline-offset: 2px; }
+  ul, ol { margin: 0; }
+  li { margin-bottom: 8px; overflow-wrap: anywhere; }
+  #entries { list-style: none; padding: 0; }
+  #entries li { border-top: 1px solid #d5dcd4; padding: 16px 0 8px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  #notice { min-height: 1.5em; margin: 8px 0 0; }
+  @media (min-width: 740px) { .panels { grid-template-columns: 1fr 1fr; align-items: start; } }
+  @media (max-width: 430px) { .fields { grid-template-columns: 1fr; } }
+</style>
+<main>
+  <header>
+    <h1>ABER</h1>
+    <p>Capture what is on your mind and decide what deserves your time today.</p>
+  </header>
+  <div class="panels">
+    <section aria-labelledby="capture">
+      <h2 id="capture">Quick capture</h2>
+      <form id="capture-form">
+        <label>Task or idea <input name="title" required maxlength="180" placeholder="e.g. plan a weekend project"></label>
+        <div class="fields">
+          <label>Type <select name="type"><option value="task">Task</option><option value="idea">Idea</option></select></label>
+          <label>Area <select name="area"><option>Personal</option><option>Work and career</option><option>Family</option><option>Hobbies</option><option>Networking</option><option>Finances</option></select></label>
+          <label>Due date <input type="date" name="due"></label>
+          <label>Importance <select name="importance"><option value="normal">Normal</option><option value="high">High</option></select></label>
+        </div>
+        <button type="submit">Save to inbox</button>
+      </form>
+      <p id="notice" role="status"></p>
+      <small>Entries stay in this browser. Use the same browser profile and site address to find them again.</small>
+    </section>
+    <section aria-labelledby="today">
+      <h2 id="today">Today</h2>
+      <p id="today-date"></p>
+      <p id="empty-today">Add a task to get a suggestion.</p>
+      <ol id="priorities"></ol>
+      <div class="actions"><button id="copy" type="button">Copy summary</button></div>
+    </section>
+  </div>
+  <section class="inbox" aria-labelledby="inbox">
+    <h2 id="inbox">Inbox</h2>
+    <p id="empty-inbox">Your saved tasks and ideas appear here.</p>
+    <ul id="entries"></ul>
+  </section>
+</main>
+<script>
+'use strict';
+
+const storageKey = 'aber.inbox.v1';
+const maxPriorities = 3;
+
+function localDate(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function dailyPriorities(items, today) {
+  const tasks = items.filter(item => item.type === 'task' && !item.done);
+  const chosen = tasks.filter(item => item.selectedOn === today);
+  const suggested = tasks.filter(item => item.selectedOn !== today && (!item.due || item.due <= today));
+  suggested.sort((a, b) =>
+    (a.due || '9999').localeCompare(b.due || '9999') ||
+    Number(b.importance === 'high') - Number(a.importance === 'high') ||
+    a.createdAt - b.createdAt
+  );
+  return [...chosen, ...suggested].slice(0, maxPriorities);
+}
+
+const form = document.querySelector('#capture-form');
+const notice = document.querySelector('#notice');
+const entries = document.querySelector('#entries');
+const priorities = document.querySelector('#priorities');
+const copy = document.querySelector('#copy');
+let items = [];
+let canSave = true;
+
+try {
+  const raw = localStorage.getItem(storageKey);
+  if (raw !== null) {
+    items = JSON.parse(raw);
+    if (!Array.isArray(items)) throw new Error('Invalid inbox');
+  }
+} catch {
+  items = [];
+  canSave = false;
+  notice.textContent = 'Browser storage could not be opened. Saving is paused.';
+  form.querySelector('button').disabled = true;
+}
+
+function commit(nextItems, message) {
+  if (!canSave) return false;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(nextItems));
+  } catch {
+    notice.textContent = 'The browser could not save the change. Try again.';
+    return false;
+  }
+  items = nextItems;
+  notice.textContent = message;
+  render();
+  return true;
+}
+
+function update(id, patch, message) {
+  return commit(items.map(item => item.id === id ? { ...item, ...patch } : item), message);
+}
+
+function addAction(parent, label, action) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.addEventListener('click', action);
+  parent.append(button);
+}
+
+function describe(item, today) {
+  if (item.selectedOn === today) return 'Chosen by you';
+  if (item.due && item.due < today) return 'Overdue';
+  if (item.due === today) return 'Due today';
+  if (item.importance === 'high') return 'High importance';
+  return 'Open task';
+}
+
+function render() {
+  const today = localDate();
+  const daily = dailyPriorities(items, today);
+  document.querySelector('#today-date').textContent =
+    new Intl.DateTimeFormat('en', { dateStyle: 'full' }).format(new Date());
+  document.querySelector('#empty-today').hidden = daily.length > 0;
+  document.querySelector('#empty-inbox').hidden = items.length > 0;
+  priorities.replaceChildren();
+  entries.replaceChildren();
+  copy.disabled = daily.length === 0;
+
+  for (const item of daily) {
+    const row = document.createElement('li');
+    row.textContent = `${item.title} · ${describe(item, today)}`;
+    priorities.append(row);
+  }
+
+  for (const item of [...items].reverse()) {
+    const row = document.createElement('li');
+    const title = document.createElement('strong');
+    const detail = document.createElement('small');
+    const actions = document.createElement('div');
+    const selected = item.selectedOn === today;
+    title.textContent = item.title;
+    detail.textContent = [item.area, item.type === 'idea' ? 'Idea' : 'Task',
+      item.due && item.due.split('-').reverse().join('/'),
+      item.importance === 'high' && 'High importance', item.done && 'Completed'].filter(Boolean).join(' · ');
+    actions.className = 'actions';
+    row.append(title, document.createElement('br'), detail, actions);
+    entries.append(row);
+
+    if (item.type === 'idea') {
+      addAction(actions, 'Turn into a task', () => update(item.id, { type: 'task' }, 'Idea converted to a task.'));
+    } else if (item.done) {
+      addAction(actions, 'Reopen', () => update(item.id, { done: false }, 'Task reopened.'));
+    } else {
+      addAction(actions, selected ? 'Unpick for today' : 'Pick for today', () => {
+        const date = localDate();
+        const alreadySelected = item.selectedOn === date;
+        const selectedCount = items.filter(entry => entry.selectedOn === date && !entry.done).length;
+        if (!alreadySelected && selectedCount >= maxPriorities) {
+          notice.textContent = 'Remove one of your three picks before adding this task.';
+          return;
+        }
+        update(item.id, { selectedOn: alreadySelected ? null : date }, 'Daily picks updated.');
+      });
+      addAction(actions, 'Complete', () => update(item.id, { done: true, selectedOn: null }, 'Task completed.'));
+    }
+  }
+}
+
+form.addEventListener('submit', event => {
+  event.preventDefault();
+  const entry = Object.fromEntries(new FormData(form));
+  const title = entry.title.trim();
+  if (!title) {
+    notice.textContent = 'Enter a task or an idea.';
+    return;
+  }
+  const item = { ...entry, title, id: crypto.randomUUID(), createdAt: Date.now(), done: false, selectedOn: null };
+  if (commit([...items, item], 'Entry saved.')) {
+    form.reset();
+    form.elements.namedItem('title').focus();
+  }
+});
+
+copy.addEventListener('click', async () => {
+  const today = localDate();
+  const lines = dailyPriorities(items, today).map((item, index) => `${index + 1}. ${item.title}`);
+  if (!lines.length) return;
+  try {
+    await navigator.clipboard.writeText([`ABER · ${today}`, ...lines].join('\n'));
+    notice.textContent = 'Summary copied.';
+  } catch {
+    notice.textContent = 'Clipboard access was blocked. You can select and copy the summary on screen.';
+  }
+});
+
+window.addEventListener('storage', event => {
+  if (event.key !== storageKey || !canSave) return;
+  items = JSON.parse(event.newValue ?? '[]');
+  render();
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) render();
+});
+render();
+</script>
+</html>
+
